@@ -26,6 +26,14 @@ train["sale_month"] = train["sale_date"].dt.month
 test["sale_year"] = test["sale_date"].dt.year
 test["sale_month"] = test["sale_date"].dt.month
 
+# Yeni türetilmiş değişkenler
+train["building_age"] = train["sale_year"] - train["year_built"]
+test["building_age"] = test["sale_year"] - test["year_built"]
+train["price_per_sqft"] = train[target_col] / (train["sqft"] + 1)
+test["price_per_sqft"] = np.nan  # testte bilinmiyor
+train["living_area_per_room"] = train["sqft"] / (train["beds"] + 1)
+test["living_area_per_room"] = test["sqft"] / (test["beds"] + 1)
+
 categorical_cols = [
     "city", "zoning", "subdivision", "present_use", "view_rainier", "view_olympics",
     "view_cascades", "view_territorial", "view_skyline", "view_sound", "view_lakewash",
@@ -49,7 +57,8 @@ full_features = list(dict.fromkeys(num_cols + categorical_cols))
 
 train_clean = train.dropna(subset=full_features + [target_col])
 X = train_clean[full_features]
-y = train_clean[target_col]
+y = np.log1p(train_clean[target_col])  # log dönüşümü
+
 test_X = test[full_features]
 
 # 📘 Cell 5: Train-test bölme
@@ -61,9 +70,11 @@ def train_qr_model(alpha):
         objective='quantile',
         alpha=alpha,
         learning_rate=0.03,
-        n_estimators=300,
+        n_estimators=400,
         min_child_samples=20,
-        max_depth=7
+        max_depth=7,
+        subsample=0.9,
+        colsample_bytree=0.8
     )
     model.fit(X_train, y_train)
     return model
@@ -73,11 +84,10 @@ model_lower = train_qr_model(0.1)
 model_upper = train_qr_model(0.9)
 
 # 📘 Cell 8: Tahmin üret
-pi_lower = model_lower.predict(test_X)
-pi_upper = model_upper.predict(test_X)
+pi_lower = np.expm1(model_lower.predict(test_X))
+pi_upper = np.expm1(model_upper.predict(test_X))
 
 # 📘 Cell 8.5: Winkler Score hesaplama
-
 def winkler_score(y_true, lower, upper, alpha=0.1):
     score = []
     for yt, l, u in zip(y_true, lower, upper):
@@ -88,9 +98,10 @@ def winkler_score(y_true, lower, upper, alpha=0.1):
             score.append((u - l) + penalty)
     return np.mean(score)
 
-pred_lower_val = model_lower.predict(X_val)
-pred_upper_val = model_upper.predict(X_val)
-val_score = winkler_score(y_val, pred_lower_val, pred_upper_val)
+pred_lower_val = np.expm1(model_lower.predict(X_val))
+pred_upper_val = np.expm1(model_upper.predict(X_val))
+y_val_exp = np.expm1(y_val)
+val_score = winkler_score(y_val_exp, pred_lower_val, pred_upper_val)
 print("📊 Validation Winkler Score:", val_score)
 
 # 📘 Cell 9: Feature Importance Görselleştirme
