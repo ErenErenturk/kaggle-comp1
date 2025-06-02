@@ -85,17 +85,19 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
     
     # Model alt ve üst sınır için
     model_lower = lgb.LGBMRegressor(
-        objective='quantile', alpha=0.1,
-        learning_rate=0.05, n_estimators=400,
-        min_child_samples=20, max_depth=7,
-        subsample=0.9, colsample_bytree=0.8,
+        objective='quantile', alpha=0.05,
+        learning_rate=0.03, n_estimators=2000,
+        min_child_samples=40, max_depth=5,
+        subsample=0.7, colsample_bytree=0.6,
+        reg_alpha=1.0, reg_lambda=2.0,
         random_state=42
     )
     model_upper = lgb.LGBMRegressor(
-        objective='quantile', alpha=0.9,
-        learning_rate=0.05, n_estimators=400,
-        min_child_samples=20, max_depth=7,
-        subsample=0.9, colsample_bytree=0.8,
+        objective='quantile', alpha=0.95,
+        learning_rate=0.03, n_estimators=2000,
+        min_child_samples=40, max_depth=5,
+        subsample=0.7, colsample_bytree=0.6,
+        reg_alpha=1.0, reg_lambda=2.0,
         random_state=42
     )
     
