@@ -18,7 +18,6 @@ ID_col = "id"
 # 📘 Cell 4: Feature engineering + encoding
 train = train[train[target_col] < 1_500_000]  # outlier filtreleme
 
-# Tarih dönüşümü
 train["sale_date"] = pd.to_datetime(train["sale_date"])
 test["sale_date"] = pd.to_datetime(test["sale_date"])
 train["sale_year"] = train["sale_date"].dt.year
@@ -26,11 +25,12 @@ train["sale_month"] = train["sale_date"].dt.month
 test["sale_year"] = test["sale_date"].dt.year
 test["sale_month"] = test["sale_date"].dt.month
 
-# Yeni türetilmiş değişkenler
 train["building_age"] = train["sale_year"] - train["year_built"]
 test["building_age"] = test["sale_year"] - test["year_built"]
+
 train["price_per_sqft"] = train[target_col] / (train["sqft"] + 1)
-test["price_per_sqft"] = np.nan  # testte bilinmiyor
+test["price_per_sqft"] = 0  # bilinmiyor
+
 train["living_area_per_room"] = train["sqft"] / (train["beds"] + 1)
 test["living_area_per_room"] = test["sqft"] / (test["beds"] + 1)
 
@@ -43,7 +43,6 @@ categorical_cols = [
 num_cols = train.select_dtypes(include=np.number).columns.tolist()
 num_cols = [col for col in num_cols if col not in [target_col, ID_col]]
 
-# Doldur ve encode et
 for col in categorical_cols:
     if col in train.columns:
         train[col] = train[col].astype(str).fillna("missing")
@@ -58,25 +57,29 @@ full_features = list(dict.fromkeys(num_cols + categorical_cols))
 train_clean = train.dropna(subset=full_features + [target_col])
 X = train_clean[full_features]
 y = np.log1p(train_clean[target_col])  # log dönüşümü
-
 test_X = test[full_features]
 
 # 📘 Cell 5: Train-test bölme
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# 📘 Cell 6: Quantile Regression model fonksiyonu
+# 📘 Cell 6: Quantile Regression modeli (early stopping eklendi)
 def train_qr_model(alpha):
     model = lgb.LGBMRegressor(
         objective='quantile',
         alpha=alpha,
-        learning_rate=0.03,
+        learning_rate=0.05,
         n_estimators=400,
         min_child_samples=20,
         max_depth=7,
         subsample=0.9,
-        colsample_bytree=0.8
+        colsample_bytree=0.8,
+        random_state=42
     )
-    model.fit(X_train, y_train)
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_val, y_val)],
+        callbacks=[lgb.early_stopping(50)]
+    )
     return model
 
 # 📘 Cell 7: Alt ve üst sınır modelleri
