@@ -1,7 +1,7 @@
 # 📘 Cell 1: Kütüphaneler
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold
 from sklearn.preprocessing import OrdinalEncoder
 import lightgbm as lgb
 import matplotlib.pyplot as plt
@@ -55,47 +55,16 @@ test[categorical_cols] = encoder.transform(test[categorical_cols])
 full_features = list(dict.fromkeys(num_cols + categorical_cols))
 
 train_clean = train.dropna(subset=full_features + [target_col])
-X = train_clean[full_features]
-y = np.log1p(train_clean[target_col])  # log dönüşümü
-test_X = test[full_features]
-
-# 📘 Cell 5: Train-test bölme
-X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+X = train_clean[full_features].values
+y = np.log1p(train_clean[target_col].values)  # log dönüşümü
+test_X = test[full_features].values
 
 # Güvenli expm1 fonksiyonu: uç değerleri kırpar
 def safe_expm1(preds, clip_min=-10, clip_max=15):
     clipped = np.clip(preds, clip_min, clip_max)
     return np.expm1(clipped)
 
-# 📘 Cell 6: Quantile Regression modeli (early stopping eklendi)
-def train_qr_model(alpha):
-    model = lgb.LGBMRegressor(
-        objective='quantile',
-        alpha=alpha,
-        learning_rate=0.05,
-        n_estimators=400,
-        min_child_samples=20,
-        max_depth=7,
-        subsample=0.9,
-        colsample_bytree=0.8,
-        random_state=42
-    )
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_val, y_val)],
-        callbacks=[lgb.early_stopping(50)]
-    )
-    return model
-
-# 📘 Cell 7: Alt ve üst sınır modelleri
-model_lower = train_qr_model(0.1)
-model_upper = train_qr_model(0.9)
-
-# 📘 Cell 8: Tahmin üret (safe_expm1 kullanarak)
-pi_lower = safe_expm1(model_lower.predict(test_X))
-pi_upper = safe_expm1(model_upper.predict(test_X))
-
-# 📘 Cell 8.5: Winkler Score hesaplama (NaN/inf kontrolleri ile)
+# Winkler score fonksiyonu
 def winkler_score(y_true, lower, upper, alpha=0.1):
     score = []
     for yt, l, u in zip(y_true, lower, upper):
@@ -110,22 +79,65 @@ def winkler_score(y_true, lower, upper, alpha=0.1):
             score.append((u - l) + penalty)
     return np.mean(score) if score else float('nan')
 
-pred_lower_val = safe_expm1(model_lower.predict(X_val))
-pred_upper_val = safe_expm1(model_upper.predict(X_val))
-y_val_exp = np.expm1(y_val)
-val_score = winkler_score(y_val_exp, pred_lower_val, pred_upper_val)
-print("📊 Validation Winkler Score:", val_score)
+# 📘 Cell 5: K-Fold Cross-Validation ile eğitim ve değerlendirme
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
-# 📘 Cell 9: Feature Importance Görselleştirme
-lgb.plot_importance(model_upper, max_num_features=20)
-plt.title("Feature importance (upper bound model)")
-plt.show()
+val_scores = []
+test_preds_lower = []
+test_preds_upper = []
 
-# 📘 Cell 10: Submission dosyası oluştur
+for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
+    print(f"Fold {fold+1}")
+    X_train, X_val = X[train_idx], X[val_idx]
+    y_train, y_val = y[train_idx], y[val_idx]
+
+    def train_qr_model(alpha):
+        model = lgb.LGBMRegressor(
+            objective='quantile',
+            alpha=alpha,
+            learning_rate=0.05,
+            n_estimators=400,
+            min_child_samples=20,
+            max_depth=7,
+            subsample=0.9,
+            colsample_bytree=0.8,
+            random_state=42
+        )
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            callbacks=[lgb.early_stopping(50)]
+        )
+        return model
+
+    model_lower = train_qr_model(0.1)
+    model_upper = train_qr_model(0.9)
+
+    pred_lower_val = safe_expm1(model_lower.predict(X_val))
+    pred_upper_val = safe_expm1(model_upper.predict(X_val))
+    y_val_exp = np.expm1(y_val)
+
+    fold_score = winkler_score(y_val_exp, pred_lower_val, pred_upper_val)
+    print(f"Fold {fold+1} Winkler Score: {fold_score}")
+    val_scores.append(fold_score)
+
+    test_pred_lower = safe_expm1(model_lower.predict(test_X))
+    test_pred_upper = safe_expm1(model_upper.predict(test_X))
+
+    test_preds_lower.append(test_pred_lower)
+    test_preds_upper.append(test_pred_upper)
+
+print(f"K-Fold CV Validation Winkler Score: {np.mean(val_scores)} ± {np.std(val_scores)}")
+
+# Ortalama test tahminleri
+final_pi_lower = np.mean(test_preds_lower, axis=0)
+final_pi_upper = np.mean(test_preds_upper, axis=0)
+
+# 📘 Cell 6: Submission dosyası oluştur
 submission = pd.DataFrame({
     "id": test[ID_col],
-    "pi_lower": pi_lower,
-    "pi_upper": pi_upper
+    "pi_lower": final_pi_lower,
+    "pi_upper": final_pi_upper
 })
 
 submission.to_csv("submission.csv", index=False)
