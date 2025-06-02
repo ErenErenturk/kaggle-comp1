@@ -2,10 +2,9 @@
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
+from sklearn.preprocessing import OrdinalEncoder
 import lightgbm as lgb
 import matplotlib.pyplot as plt
-from skgarden import RandomForestQuantileRegressor
 
 # 📘 Cell 2: Veriyi yükle
 train = pd.read_csv("house-pi/dataset/dataset.csv")
@@ -16,7 +15,17 @@ sample_submission = pd.read_csv("house-pi/sample_submission.csv")
 target_col = "sale_price"
 ID_col = "id"
 
-# 📘 Cell 4: Kategorik + sayısal veri işleme
+# 📘 Cell 4: Feature engineering + encoding
+train = train[train[target_col] < 1_500_000]  # outlier filtreleme
+
+# Tarih dönüşümü
+train["sale_date"] = pd.to_datetime(train["sale_date"])
+test["sale_date"] = pd.to_datetime(test["sale_date"])
+train["sale_year"] = train["sale_date"].dt.year
+train["sale_month"] = train["sale_date"].dt.month
+test["sale_year"] = test["sale_date"].dt.year
+test["sale_month"] = test["sale_date"].dt.month
+
 categorical_cols = [
     "city", "zoning", "subdivision", "present_use", "view_rainier", "view_olympics",
     "view_cascades", "view_territorial", "view_skyline", "view_sound", "view_lakewash",
@@ -26,6 +35,7 @@ categorical_cols = [
 num_cols = train.select_dtypes(include=np.number).columns.tolist()
 num_cols = [col for col in num_cols if col not in [target_col, ID_col]]
 
+# Doldur ve encode et
 for col in categorical_cols:
     if col in train.columns:
         train[col] = train[col].astype(str).fillna("missing")
@@ -45,8 +55,8 @@ test_X = test[full_features]
 # 📘 Cell 5: Train-test bölme
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# 📘 Cell 6: LightGBM Quantile Regression modeli
-def train_lgb_qr(alpha):
+# 📘 Cell 6: Quantile Regression model fonksiyonu
+def train_qr_model(alpha):
     model = lgb.LGBMRegressor(
         objective='quantile',
         alpha=alpha,
@@ -58,31 +68,15 @@ def train_lgb_qr(alpha):
     model.fit(X_train, y_train)
     return model
 
-model_lgb_lower = train_lgb_qr(0.1)
-model_lgb_upper = train_lgb_qr(0.9)
+# 📘 Cell 7: Alt ve üst sınır modelleri
+model_lower = train_qr_model(0.1)
+model_upper = train_qr_model(0.9)
 
-# 📘 Cell 7: QRF modeli
-model_qrf = RandomForestQuantileRegressor(random_state=42, n_estimators=100)
-model_qrf.fit(X_train, y_train)
+# 📘 Cell 8: Tahmin üret
+pi_lower = model_lower.predict(test_X)
+pi_upper = model_upper.predict(test_X)
 
-qrf_lower = model_qrf.predict(test_X, quantile=10)
-qrf_upper = model_qrf.predict(test_X, quantile=90)
-
-# 📘 Cell 8: Ensemble tahminleri
-lgb_lower = model_lgb_lower.predict(test_X)
-lgb_upper = model_lgb_upper.predict(test_X)
-
-final_pi_lower = (lgb_lower + qrf_lower) / 2
-final_pi_upper = (lgb_upper + qrf_upper) / 2
-
-# 📘 Cell 9: Validation Winkler Score
-val_lgb_lower = model_lgb_lower.predict(X_val)
-val_lgb_upper = model_lgb_upper.predict(X_val)
-val_qrf_lower = model_qrf.predict(X_val, quantile=10)
-val_qrf_upper = model_qrf.predict(X_val, quantile=90)
-
-final_val_lower = (val_lgb_lower + val_qrf_lower) / 2
-final_val_upper = (val_lgb_upper + val_qrf_upper) / 2
+# 📘 Cell 8.5: Winkler Score hesaplama
 
 def winkler_score(y_true, lower, upper, alpha=0.1):
     score = []
@@ -94,20 +88,22 @@ def winkler_score(y_true, lower, upper, alpha=0.1):
             score.append((u - l) + penalty)
     return np.mean(score)
 
-val_score = winkler_score(y_val, final_val_lower, final_val_upper)
+pred_lower_val = model_lower.predict(X_val)
+pred_upper_val = model_upper.predict(X_val)
+val_score = winkler_score(y_val, pred_lower_val, pred_upper_val)
 print("📊 Validation Winkler Score:", val_score)
+
+# 📘 Cell 9: Feature Importance Görselleştirme
+lgb.plot_importance(model_upper, max_num_features=20)
+plt.title("Feature importance (upper bound model)")
+plt.show()
 
 # 📘 Cell 10: Submission dosyası oluştur
 submission = pd.DataFrame({
     "id": test[ID_col],
-    "pi_lower": final_pi_lower,
-    "pi_upper": final_pi_upper
+    "pi_lower": pi_lower,
+    "pi_upper": pi_upper
 })
 
 submission.to_csv("submission.csv", index=False)
 print("✅ Yeni submission dosyası oluşturuldu.")
-
-# 📘 Cell 11: Feature Importance Görselleştirme
-lgb.plot_importance(model_lgb_upper, max_num_features=20)
-plt.title("Feature importance (upper bound model)")
-plt.show()
