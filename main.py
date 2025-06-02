@@ -62,6 +62,11 @@ test_X = test[full_features]
 # 📘 Cell 5: Train-test bölme
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
+# Güvenli expm1 fonksiyonu: uç değerleri kırpar
+def safe_expm1(preds, clip_min=-10, clip_max=15):
+    clipped = np.clip(preds, clip_min, clip_max)
+    return np.expm1(clipped)
+
 # 📘 Cell 6: Quantile Regression modeli (early stopping eklendi)
 def train_qr_model(alpha):
     model = lgb.LGBMRegressor(
@@ -86,23 +91,27 @@ def train_qr_model(alpha):
 model_lower = train_qr_model(0.1)
 model_upper = train_qr_model(0.9)
 
-# 📘 Cell 8: Tahmin üret
-pi_lower = np.expm1(model_lower.predict(test_X))
-pi_upper = np.expm1(model_upper.predict(test_X))
+# 📘 Cell 8: Tahmin üret (safe_expm1 kullanarak)
+pi_lower = safe_expm1(model_lower.predict(test_X))
+pi_upper = safe_expm1(model_upper.predict(test_X))
 
-# 📘 Cell 8.5: Winkler Score hesaplama
+# 📘 Cell 8.5: Winkler Score hesaplama (NaN/inf kontrolleri ile)
 def winkler_score(y_true, lower, upper, alpha=0.1):
     score = []
     for yt, l, u in zip(y_true, lower, upper):
+        if np.isnan(l) or np.isnan(u) or np.isnan(yt):
+            continue
+        if np.isinf(l) or np.isinf(u) or np.isinf(yt):
+            continue
         if l <= yt <= u:
             score.append(u - l)
         else:
             penalty = (2 / alpha) * (l - yt) if yt < l else (2 / alpha) * (yt - u)
             score.append((u - l) + penalty)
-    return np.mean(score)
+    return np.mean(score) if score else float('nan')
 
-pred_lower_val = np.expm1(model_lower.predict(X_val))
-pred_upper_val = np.expm1(model_upper.predict(X_val))
+pred_lower_val = safe_expm1(model_lower.predict(X_val))
+pred_upper_val = safe_expm1(model_upper.predict(X_val))
 y_val_exp = np.expm1(y_val)
 val_score = winkler_score(y_val_exp, pred_lower_val, pred_upper_val)
 print("📊 Validation Winkler Score:", val_score)
